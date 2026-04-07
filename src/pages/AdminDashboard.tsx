@@ -45,9 +45,29 @@ const AdminDashboard = () => {
     setIsModalOpen(true);
   };
 
+  // 輔助函式：地理編碼 (地址轉經緯度)
+  const getCoordinates = async (address: string) => {
+    try {
+      const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
+      const response = await fetch(
+        `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${apiKey}`
+      );
+      const data = await response.json();
+      if (data.status === 'OK' && data.results && data.results.length > 0) {
+        return data.results[0].geometry.location; // Google 回傳格式為 { lat, lng }
+      }
+    } catch (err) {
+      console.error('Geocoding error:', err);
+    }
+    return { lat: 0, lng: 0 };
+  };
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingStore) return;
+
+    // 儲存前自動根據地址取得經緯度
+    const coords = await getCoordinates(editingStore.address);
 
     const storeData = {
       name: editingStore.name,
@@ -57,8 +77,8 @@ const AdminDashboard = () => {
       offer_details: editingStore.offer_details,
       valid_start: editingStore.valid_start,
       valid_end: editingStore.valid_end,
-      lat: editingStore.lat,
-      lng: editingStore.lng,
+      lat: coords.lat,
+      lng: coords.lng,
     };
 
     const { error } = editingStore.id
@@ -229,32 +249,6 @@ const AdminDashboard = () => {
                     value={editingStore.offer_details || ''}
                     onChange={e => setEditingStore(prev => prev ? {...prev, offer_details: e.target.value} : null)}
                     className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-[#964696] outline-none"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-sm font-medium text-slate-700">緯度 (Lat)</label>
-                  <input 
-                    type="number"
-                    step="any"
-                    value={editingStore.lat || ''}
-                    onChange={e => {
-                      const val = e.target.value;
-                      setEditingStore(prev => prev ? {...prev, lat: val === '' ? 0 : parseFloat(val)} : null)
-                    }}
-                    className="w-full px-3 py-2 border rounded-lg text-sm"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-sm font-medium text-slate-700">經度 (Lng)</label>
-                  <input 
-                    type="number"
-                    step="any"
-                    value={editingStore.lng || ''}
-                    onChange={e => {
-                      const val = e.target.value;
-                      setEditingStore(prev => prev ? {...prev, lng: val === '' ? 0 : parseFloat(val)} : null)
-                    }}
-                    className="w-full px-3 py-2 border rounded-lg text-sm"
                   />
                 </div>
               </div>

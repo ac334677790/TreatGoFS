@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { MapPin, Phone, Search, Navigation, ExternalLink, Clock, ChevronDown, ChevronUp, Gift } from 'lucide-react';
 import { Store } from './mockStores'; // 僅保留型別定義
 import { supabase } from '../lib/supabase';
@@ -12,6 +12,19 @@ const ContractStoreSearch = () => {
   const [sortMode, setSortMode] = useState<'default' | 'distance'>('default'); // default, distance
   const [selectedCategory, setSelectedCategory] = useState<string>('全部');
   const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [isScrolled, setIsScrolled] = useState(false);
+  const [showStickySearch, setShowStickySearch] = useState(false);
+
+  // 監聽捲動事件
+  useEffect(() => {
+    const handleScroll = () => {
+      const offset = window.scrollY;
+      setIsScrolled(offset > 150);
+      if (offset <= 150) setShowStickySearch(false);
+    };
+    window.addEventListener('scroll', handleScroll);
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
 
   // 1. 初始化資料 (模擬從資料庫讀取)
   useEffect(() => {
@@ -53,6 +66,15 @@ const ContractStoreSearch = () => {
 
   // 2. 處理定位與距離排序
   const handleLocateMe = () => {
+    // 如果已經是距離排序模式，則點擊後取消排序並恢復原始 ID 順序
+    if (sortMode === 'distance') {
+      const defaultSorted = [...stores].sort((a, b) => a.id - b.id);
+      setStores(defaultSorted);
+      setSortMode('default');
+      setUserLocation(null);
+      return;
+    }
+
     if (!navigator.geolocation) {
       alert("您的裝置不支援定位功能");
       return;
@@ -116,49 +138,58 @@ const ContractStoreSearch = () => {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans">
-      {/* Header */}
-      <header className="bg-white shadow-sm sticky top-0 z-20">
-        <div className="max-w-5xl mx-auto px-4 py-4">
+      {/* 固定在頂部的導覽列 */}
+      <header className="bg-white shadow-sm sticky top-0 z-30">
+        <div className="max-w-5xl mx-auto px-4 py-4 flex justify-between items-center">
           <h1 className="text-xl md:text-2xl font-bold text-[#545454] flex items-center gap-2">
             特約商店查詢
           </h1>
+          
+          {/* 捲動後顯示在右上角的搜尋按鈕 */}
+          {isScrolled && (
+            <button 
+              onClick={() => setShowStickySearch(!showStickySearch)}
+              className={`p-2 rounded-full transition-all ${showStickySearch ? 'bg-[#964696] text-white' : 'bg-slate-100 text-[#964696] hover:bg-slate-200'}`}
+            >
+              <Search size={20} />
+            </button>
+          )}
         </div>
+
+        {/* 捲動時點開顯示的搜尋控制列 */}
+        {isScrolled && showStickySearch && (
+          <div className="absolute top-full left-0 w-full bg-white shadow-xl border-t border-slate-100 p-4 animate-in slide-in-from-top duration-200">
+            <div className="max-w-5xl mx-auto flex flex-col md:flex-row gap-2">
+              <SearchControls 
+                searchTerm={searchTerm} 
+                setSearchTerm={setSearchTerm}
+                selectedCategory={selectedCategory}
+                setSelectedCategory={setSelectedCategory}
+                categories={categories}
+                handleLocateMe={handleLocateMe}
+                sortMode={sortMode}
+                compact={true}
+              />
+            </div>
+          </div>
+        )}
       </header>
 
       <main className="max-w-5xl mx-auto px-4 py-6">
         
         {/* 控制面板：搜尋與定位 */}
-        <div className="bg-white p-3 rounded-xl shadow-sm mb-6 flex flex-col md:flex-row gap-2">
-          <div className="relative flex-grow">
-            <Search className="absolute left-3 top-3 text-slate-400 w-5 h-5" />
-            <input 
-              type="text"
-              placeholder="搜尋廠商、地點或分類..."
-              className="w-full pl-10 pr-4 py-3 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#964696] bg-slate-50 transition-all"
-              value={searchTerm}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearchTerm(e.target.value)}
+        <div className={isScrolled ? 'opacity-0 h-0 overflow-hidden mb-0' : 'mb-6 transition-all duration-300'}>
+          <div className="bg-white p-3 rounded-xl shadow-sm flex flex-col md:flex-row gap-2">
+            <SearchControls 
+              searchTerm={searchTerm} 
+              setSearchTerm={setSearchTerm}
+              selectedCategory={selectedCategory}
+              setSelectedCategory={setSelectedCategory}
+              categories={categories}
+              handleLocateMe={handleLocateMe}
+              sortMode={sortMode}
             />
           </div>
-          <select 
-            value={selectedCategory}
-            onChange={(e) => setSelectedCategory(e.target.value)}
-            className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 outline-none focus:ring-2 focus:ring-[#964696] text-slate-600 font-medium cursor-pointer transition-all text-sm"
-          >
-            {categories.map(cat => (
-              <option key={cat} value={cat}>{cat}</option>
-            ))}
-          </select>
-          <button 
-            onClick={handleLocateMe}
-            className={`flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg font-medium transition-all active:scale-95 text-sm ${
-              sortMode === 'distance' 
-                ? 'bg-[#009BAA] text-white shadow-md' 
-                : 'bg-[#964696] text-white hover:opacity-90 shadow-md'
-            }`}
-          >
-            <Navigation className={`w-5 h-5 ${sortMode === 'distance' ? 'fill-current' : ''}`} />
-            {sortMode === 'distance' ? '已依距離排序' : '查詢附近廠商'}
-          </button>
         </div>
 
         {/* 狀態顯示 */}
@@ -334,5 +365,42 @@ const ContractStoreSearch = () => {
     </div>
   );
 };
+
+const SearchControls = ({ searchTerm, setSearchTerm, selectedCategory, setSelectedCategory, categories, handleLocateMe, sortMode, compact = false }: any) => (
+  <>
+    <div className="relative flex-grow">
+      <Search className={`absolute left-3 ${compact ? 'top-2.5 w-4 h-4' : 'top-3 w-5 h-5'} text-slate-400`} />
+      <input 
+        type="text"
+        placeholder="搜尋廠商..."
+        className={`w-full pl-10 pr-4 ${compact ? 'py-2 text-sm' : 'py-3'} border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#964696] bg-slate-50 transition-all`}
+        value={searchTerm}
+        onChange={(e) => setSearchTerm(e.target.value)}
+      />
+    </div>
+    <div className="flex gap-2">
+      <select 
+        value={selectedCategory}
+        onChange={(e) => setSelectedCategory(e.target.value)}
+        className={`bg-slate-50 border border-slate-200 rounded-lg px-3 ${compact ? 'py-2 text-xs' : 'py-2.5 text-sm'} outline-none focus:ring-2 focus:ring-[#964696] text-slate-600 font-medium cursor-pointer flex-grow md:flex-grow-0`}
+      >
+        {categories.map((cat: string) => (
+          <option key={cat} value={cat}>{cat}</option>
+        ))}
+      </select>
+      <button 
+        onClick={handleLocateMe}
+        className={`flex items-center justify-center gap-2 px-4 rounded-lg font-medium transition-all active:scale-95 whitespace-nowrap flex-grow md:flex-grow-0 ${compact ? 'py-2 text-xs' : 'py-2.5 text-sm'} ${
+          sortMode === 'distance' 
+            ? 'bg-[#009BAA] text-white shadow-md' 
+            : 'bg-[#964696] text-white hover:opacity-90 shadow-md'
+        }`}
+      >
+        <Navigation className={`${compact ? 'w-4 h-4' : 'w-5 h-5'} ${sortMode === 'distance' ? 'fill-current' : ''}`} />
+        {compact ? (sortMode === 'distance' ? '取消排序' : '定位') : (sortMode === 'distance' ? '取消距離排序' : '查詢附近廠商')}
+      </button>
+    </div>
+  </>
+);
 
 export default ContractStoreSearch;

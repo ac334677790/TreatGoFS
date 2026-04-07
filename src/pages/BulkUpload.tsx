@@ -38,13 +38,13 @@ const BulkUpload = () => {
   // 輔助函式：地理編碼 (地址轉經緯度)
   const getCoordinates = async (address: string) => {
     try {
+      const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
       const response = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}&limit=1`,
-        { headers: { 'User-Agent': 'TreatGo-App' } }
+        `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${apiKey}`
       );
       const data = await response.json();
-      if (data && data.length > 0) {
-        return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
+      if (data.status === 'OK' && data.results && data.results.length > 0) {
+        return data.results[0].geometry.location; // Google 回傳格式為 { lat, lng }
       }
     } catch (err) {
       console.error('Geocoding error:', err);
