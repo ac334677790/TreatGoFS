@@ -39,12 +39,35 @@ const VendorSearch = () => {
       
       if (error) {
         console.error('Error fetching stores:', error);
+        setIsLoading(false);
       } else if (data) {
-        setStores(data);
-        setFilteredStores(data);
+        // 預設嘗試取得定位以計算距離
+        if (navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(
+            (position) => {
+              const { latitude, longitude } = position.coords;
+              setUserLocation({ lat: latitude, lng: longitude });
+
+              const storesWithDistance = data.map(store => ({
+                ...store,
+                distance: calculateDistance(latitude, longitude, store.lat, store.lng)
+              }));
+
+              storesWithDistance.sort((a, b) => a.distance - b.distance);
+              setStores(storesWithDistance);
+              setSortMode('distance');
+              setIsLoading(false);
+            },
+            () => {
+              setStores(data);
+              setIsLoading(false);
+            }
+          );
+        } else {
+          setStores(data);
+          setIsLoading(false);
+        }
       }
-      
-      setIsLoading(false);
     };
 
     fetchStores();

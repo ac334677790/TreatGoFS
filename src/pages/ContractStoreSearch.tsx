@@ -39,6 +39,7 @@ const ContractStoreSearch = () => {
       
       if (error) {
         console.error('Error fetching stores:', error);
+        setIsLoading(false);
       } else if (data) {
         setStores(data);
         setFilteredStores(data);
