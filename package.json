@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.7",
+    "@tanstack/react-table": "^8.21.3",
     "axios": "^1.13.6",
     "canvas-confetti": "^1.9.3",
     "dotenv": "^16.5.0",

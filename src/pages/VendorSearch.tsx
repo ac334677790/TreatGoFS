@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { MapPin, Phone, Search, Navigation, ExternalLink, Clock, Gift } from 'lucide-react';
+import { MapPin, Phone, Search, Navigation, ExternalLink, Clock, Gift, FileText } from 'lucide-react';
 import { Store } from './mockStores'; // 僅保留型別定義
 import { supabase } from '../lib/supabase';
 
@@ -256,7 +256,7 @@ const VendorSearch = () => {
                           href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${store.name} ${store.address}`)}`}
                           target="_blank"
                           rel="noreferrer"
-                          className="hover:text-[#964696] hover:underline text-left leading-tight"
+                          className="hover:text-[#964696] hover:underline text-left leading-tight whitespace-pre-wrap break-words"
                         >
                           {store.address}
                         </a>
@@ -279,14 +279,14 @@ const VendorSearch = () => {
                     {/* 優惠內容區塊 (摺疊) */}
                     {expandedId === store.id && (
                       <div className="bg-[#009BAA]/5 px-4 py-3 border-t border-[#009BAA]/10 animate-in fade-in slide-in-from-top-1 duration-200">
-                        <p className="text-sm text-[#009BAA] font-bold">
+                        <p className="text-sm text-[#009BAA] font-bold whitespace-pre-wrap break-words">
                           {store.offer_details}
                         </p>
                       </div>
                     )}
                     
                     {/* 底部按鈕列 */}
-                    <div className="grid grid-cols-3 border-t border-slate-100">
+                    <div className={`grid ${store.attachment_url ? 'grid-cols-4' : 'grid-cols-3'} border-t border-slate-100`}>
                       <button 
                         onClick={() => toggleExpand(store.id)}
                         className={`flex items-center justify-center gap-1 py-3 text-sm font-bold border-r border-slate-100 transition-colors ${
@@ -309,6 +309,16 @@ const VendorSearch = () => {
                       >
                         <Navigation size={16} /> 地圖
                       </a>
+                      {store.attachment_url && (
+                        <a 
+                          href={store.attachment_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="flex items-center justify-center gap-1 py-3 bg-white hover:bg-slate-50 text-[#964696] text-sm font-bold transition-colors"
+                        >
+                          <FileText size={16} /> 附件
+                        </a>
+                      )}
                     </div>
                 </div>
               ))}
@@ -323,6 +333,7 @@ const VendorSearch = () => {
                       <th className="px-6 py-3 text-xs font-bold text-[#545454] uppercase tracking-wider">名稱 / 分類</th>
                       <th className="px-6 py-3 text-xs font-bold text-[#545454] uppercase tracking-wider">聯絡資訊</th>
                       <th className="px-6 py-3 text-xs font-bold text-[#545454] uppercase tracking-wider">詳細優惠</th>
+                      <th className="px-6 py-3 text-xs font-bold text-[#545454] uppercase tracking-wider text-center">附件</th>
                       <th className="px-6 py-3 text-xs font-bold text-[#545454] uppercase tracking-wider text-right">距離</th>
                     </tr>
                   </thead>
@@ -349,9 +360,16 @@ const VendorSearch = () => {
                           </div>
                         </td>
                         <td className="px-6 py-4">
-                          <div className="text-sm text-[#009BAA] font-bold leading-tight">
+                          <div className="text-sm text-[#009BAA] font-bold leading-tight whitespace-pre-wrap break-words">
                             {store.offer_details}
                           </div>
+                        </td>
+                        <td className="px-6 py-4 text-center">
+                          {store.attachment_url && (
+                            <a href={store.attachment_url} target="_blank" rel="noreferrer" className="text-[#964696] hover:opacity-70 inline-block">
+                              <FileText size={18} />
+                            </a>
+                          )}
                         </td>
                         <td className="px-6 py-4 text-right">
                           {store.distance !== undefined && store.distance < 9999 && (

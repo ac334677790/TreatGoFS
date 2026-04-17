@@ -1,19 +1,129 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { MapPin, Phone, Search, Navigation, ExternalLink, Clock, ChevronDown, ChevronUp, Gift } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { MapPin, Phone, Search, Navigation, ExternalLink, Clock, ChevronDown, ChevronUp, Gift, FileText } from 'lucide-react';
 import { Store } from './mockStores'; // 僅保留型別定義
 import { supabase } from '../lib/supabase';
+import {
+  createColumnHelper,
+  flexRender,
+  getCoreRowModel,
+  useReactTable,
+} from '@tanstack/react-table';
+
+
+const PAGE_SIZE = 15;
 
 const ContractStoreSearch = () => {
   const [stores, setStores] = useState<any[]>([]);
-  const [filteredStores, setFilteredStores] = useState<Store[]>([]);
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isFetchingMore, setIsFetchingMore] = useState<boolean>(false);
   const [sortMode, setSortMode] = useState<'default' | 'distance'>('default'); // default, distance
   const [selectedCategory, setSelectedCategory] = useState<string>('全部');
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [isScrolled, setIsScrolled] = useState(false);
   const [showStickySearch, setShowStickySearch] = useState(false);
+  const [page, setPage] = useState(0);
+  const [hasMore, setHasMore] = useState(true);
+  const loaderRef = useRef<HTMLDivElement>(null);
+  const [categories, setCategories] = useState<string[]>(['全部']);
+
+  // TanStack Table 欄位定義
+  const columnHelper = createColumnHelper<Store & { distance?: number; attachment_url?: string }>();
+  const columns = useMemo(() => {
+    const cols: any[] = [
+      columnHelper.accessor('name', {
+      header: '名稱 / 分類',
+      cell: (info) => (
+        <div className="flex flex-col items-start gap-2 min-w-[200px]">
+          <div>
+            <span className="text-[10px] bg-[#964696]/10 text-[#964696] px-1.5 py-0.5 rounded font-bold uppercase whitespace-nowrap">
+              {info.row.original.category}
+            </span>
+          </div>
+          <div>
+            <span className="font-bold text-[#545454]">{info.getValue()}</span>
+          </div>
+        </div>
+      ),
+    }),
+      columnHelper.display({
+      id: 'contact',
+      header: '聯絡資訊',
+      cell: (info) => {
+        const store = info.row.original;
+        return (
+          <div className="text-sm text-slate-600">
+            <div className="flex items-center gap-1 mb-1 truncate max-w-[200px]">
+              <MapPin size={14} className="text-slate-400" />
+              <a
+                href={`https://www.google.com/maps/search/?api=1&query=${store.lat},${store.lng}`}
+                target="_blank"
+                rel="noreferrer"
+                className="hover:underline"
+              >
+                {store.address}
+              </a>
+            </div>
+            <div className="flex items-center gap-2">
+              <Phone size={14} className="text-slate-400" />
+              <span className="text-slate-600">{store.phone}</span>
+            </div>
+            <div className="text-[14px] text-slate-400 mt-1 flex items-center gap-1">
+              {/* <Clock size={14} /> {store.valid_start && store.valid_end ? `${store.valid_start} ~ ${store.valid_end}` : '長期有效'} */}
+            </div>
+          </div>
+        );
+      },
+    }),
+      columnHelper.accessor('offer_details', {
+      header: '詳細優惠',
+      cell: (info) => (
+        <div className="text-sm text-[#009BAA] font-bold leading-tight whitespace-pre-wrap break-words">
+          {info.getValue()}
+        </div>
+      ),
+    }),
+      columnHelper.display({
+        id: 'attachment',
+        header: '附件',
+        cell: (info) => {
+          const url = info.row.original.attachment_url;
+          if (!url) return null;
+          return (
+            <a
+              href={url}
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center gap-1 text-[#964696] hover:underline font-bold"
+            >
+              <FileText size={16} /> 查看
+            </a>
+          );
+        },
+      }),
+    ];
+
+    // 只有在距離排序模式（查詢附近）時才顯示距離欄位
+    if (sortMode === 'distance') {
+      cols.push(
+        columnHelper.accessor('distance', {
+          header: () => <div className="text-right">距離</div>,
+          cell: (info) => {
+            const dist = info.getValue();
+            if (dist === undefined) return null;
+            return (
+              <div className="text-right text-[#009BAA] font-bold text-sm">
+                {dist < 1 ? `${(dist * 1000).toFixed(0)}m` : `${dist.toFixed(1)}km`}
+              </div>
+            );
+          },
+        })
+      );
+    }
+
+    return cols;
+  }, [sortMode, columnHelper]);
 
   // 監聽捲動事件
   useEffect(() => {
@@ -26,30 +136,70 @@ const ContractStoreSearch = () => {
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
 
-  // 1. 初始化資料 (模擬從資料庫讀取)
+  // 1. 取得分類清單 (初始化一次即可)
   useEffect(() => {
-    const fetchStores = async () => {
-      setIsLoading(true);
-      
-      // 從 Supabase 抓取真實資料
-      const { data, error } = await supabase
-        .from('contract_stores')
-        .select('*')
-        .order('id', { ascending: true });
-      
-      if (error) {
-        console.error('Error fetching stores:', error);
-        setIsLoading(false);
-      } else if (data) {
-        setStores(data);
-        setFilteredStores(data);
+    const fetchCategories = async () => {
+      const { data } = await supabase.from('contract_stores').select('category');
+      if (data) {
+        const cats = ['全部', ...Array.from(new Set(data.map((s: any) => s.category))).sort() as string[]];
+        setCategories(cats);
       }
-      
-      setIsLoading(false);
     };
-
-    fetchStores();
+    fetchCategories();
   }, []);
+
+  // 2. 核心抓取資料函式
+  const fetchStores = async (pageNum: number, isNewSearch: boolean) => {
+    if (pageNum === 0) setIsLoading(true);
+    else setIsFetchingMore(true);
+
+    let query = supabase
+      .from('contract_stores')
+      .select('*', { count: 'exact' });
+
+    // 伺服器端過濾
+    if (selectedCategory !== '全部') {
+      query = query.eq('category', selectedCategory);
+    }
+
+    if (searchTerm) {
+      query = query.or(`name.ilike.%${searchTerm}%,address.ilike.%${searchTerm}%,category.ilike.%${searchTerm}%`);
+    }
+
+    const from = pageNum * PAGE_SIZE;
+    const to = from + PAGE_SIZE - 1;
+
+    const { data, error, count } = await query
+      .order('id', { ascending: true })
+      .range(from, to);
+
+    if (error) {
+      console.error('Error fetching stores:', error);
+    } else if (data) {
+      setStores(prev => isNewSearch ? data : [...prev, ...data]);
+      setHasMore(count ? (pageNum + 1) * PAGE_SIZE < count : false);
+    }
+    
+    setIsLoading(false);
+    setIsFetchingMore(false);
+  };
+
+  // 當分頁改變時抓取
+  useEffect(() => {
+    if (sortMode !== 'distance') {
+      fetchStores(page, page === 0);
+    }
+  }, [page]);
+
+  // 當搜尋或分類改變時，重置回第一頁
+  useEffect(() => {
+    if (sortMode === 'distance') return;
+    if (page !== 0) {
+      setPage(0);
+    } else {
+      fetchStores(0, true);
+    }
+  }, [searchTerm, selectedCategory]);
 
   // 計算距離公式 (Haversine Formula) - 回傳單位: 公里
   const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
@@ -66,13 +216,13 @@ const ContractStoreSearch = () => {
   };
 
   // 2. 處理定位與距離排序
-  const handleLocateMe = () => {
+  const handleLocateMe = async () => {
     // 如果已經是距離排序模式，則點擊後取消排序並恢復原始 ID 順序
     if (sortMode === 'distance') {
-      const defaultSorted = [...stores].sort((a, b) => a.id - b.id);
-      setStores(defaultSorted);
       setSortMode('default');
       setUserLocation(null);
+      setPage(0);
+      fetchStores(0, true);
       return;
     }
 
@@ -83,22 +233,24 @@ const ContractStoreSearch = () => {
 
     setIsLoading(true);
     navigator.geolocation.getCurrentPosition(
-      (position: GeolocationPosition) => {
+      async (position: GeolocationPosition) => {
         const { latitude, longitude } = position.coords;
         setUserLocation({ lat: latitude, lng: longitude });
 
-        // 計算距離並加入資料物件中
-        const storesWithDistance = stores.map(store => ({
-          ...store,
-          distance: calculateDistance(latitude, longitude, store.lat, store.lng)
-        }));
-
-        // 依距離排序
-        storesWithDistance.sort((a, b) => a.distance - b.distance);
+        setIsLoading(true);
+        // 距離排序模式下，一次抓取較多資料進行前端排序
+        const { data } = await supabase.from('contract_stores').select('*').limit(300);
         
-        setStores(storesWithDistance);
-        // 觸發搜尋過濾以更新顯示
-        setSortMode('distance');
+        if (data) {
+          const storesWithDistance = data.map(store => ({
+            ...store,
+            distance: calculateDistance(latitude, longitude, store.lat, store.lng)
+          })).sort((a, b) => a.distance - b.distance);
+          
+          setStores(storesWithDistance);
+          setSortMode('distance');
+          setHasMore(false); // 距離模式下暫時關閉分頁
+        }
         setIsLoading(false);
       },
       (error: GeolocationPositionError) => {
@@ -109,33 +261,32 @@ const ContractStoreSearch = () => {
     );
   };
 
-  // 3. 搜尋過濾邏輯 (當搜尋關鍵字或資料源改變時觸發)
-  useEffect(() => {
-    let results = stores;
-    
-    if (searchTerm) {
-      const lowerTerm = searchTerm.toLowerCase();
-      results = results.filter(store => 
-        store.name.toLowerCase().includes(lowerTerm) ||
-        store.category.toLowerCase().includes(lowerTerm) ||
-        store.address.toLowerCase().includes(lowerTerm)
-      );
-    }
-
-    if (selectedCategory !== '全部') {
-      results = results.filter(store => store.category === selectedCategory);
-    }
-
-    setFilteredStores(results);
-  }, [searchTerm, stores, selectedCategory]);
-
   // 切換展開狀態
   const toggleExpand = (id: number) => {
     setExpandedId(expandedId === id ? null : id);
   };
 
-  // 動態取得所有廠商的分類清單
-  const categories = ['全部', ...Array.from(new Set(stores.map(s => s.category))).sort()];
+  // 3. 無限捲動監聽
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      entries => {
+        if (entries[0].isIntersecting && hasMore && !isLoading && !isFetchingMore && sortMode === 'default') {
+          setPage(prev => prev + 1);
+        }
+      },
+      { threshold: 0.1 }
+    );
+
+    if (loaderRef.current) observer.observe(loaderRef.current);
+    return () => observer.disconnect();
+  }, [hasMore, isLoading, isFetchingMore, sortMode]);
+
+  // 初始化 TanStack Table
+  const table = useReactTable({
+    data: stores,
+    columns,
+    getCoreRowModel: getCoreRowModel(),
+  });
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans">
@@ -199,20 +350,20 @@ const ContractStoreSearch = () => {
         ) : (
           <>
             <div className="text-sm text-slate-500 mb-4 flex justify-between items-end">
-              <span>共找到 {filteredStores.length} 家廠商</span>
+              <span>已顯示 {stores.length} 家廠商</span>
               {userLocation && <span className="text-xs text-[#009BAA] font-bold">● 已定位目前位置</span>}
             </div>
 
             {/* 手機版：卡片清單 (MD 以下顯示) */}
             <div className="md:hidden grid grid-cols-1 gap-4">
-              {filteredStores.map((store) => (
+              {stores.map((store) => (
                 <div key={store.id} className="bg-white rounded-xl shadow-sm border border-slate-100 hover:shadow-md transition-shadow overflow-hidden flex flex-col">
                     {/* 卡片頭部：分類與距離 */}
                     <div className="border-b border-slate-50 flex justify-between items-start bg-slate-50/50">
                       <span className="inline-block bg-white border border-slate-200 text-slate-600 text-xs px-2 py-1 rounded font-medium">
                         {store.category}
                       </span>
-                      {store.distance !== undefined && (
+                      {sortMode === 'distance' && store.distance !== undefined && (
                         <span className="text-[#009BAA] font-bold text-sm flex items-center gap-1">
                           <Navigation className="w-3 h-3" />
                           {store.distance < 1 
@@ -233,7 +384,7 @@ const ContractStoreSearch = () => {
                             href={`https://www.google.com/maps/search/?api=1&query=${store.lat},${store.lng}`}
                             target="_blank"
                             rel="noreferrer"
-                            className="hover:text-[#964696] hover:underline text-left leading-tight"
+                            className="hover:text-[#964696] hover:underline text-left leading-tight whitespace-pre-wrap break-words"
                           >
                             {store.address}
                           </a>
@@ -244,26 +395,26 @@ const ContractStoreSearch = () => {
                             {store.phone}
                           </a>
                         </div>
-                        <div className="flex items-center gap-2 text-xs text-slate-400">
+                        {/* <div className="flex items-center gap-2 text-xs text-slate-400">
                           <Clock className="w-3.5 h-3.5" />
                           <span>
                             優惠期間：{store.valid_start && store.valid_end ? `${store.valid_start} ~ ${store.valid_end}` : '長期有效'}
                           </span>
-                        </div>
+                        </div> */}
                       </div>
                     </div>
                     
                     {/* 優惠內容區塊 (摺疊) */}
                     {expandedId === store.id && (
                       <div className="bg-[#009BAA]/5 px-4 py-3 border-t border-[#009BAA]/10 animate-in fade-in slide-in-from-top-1 duration-200">
-                        <p className="text-sm text-[#009BAA] font-bold">
+                        <p className="text-sm text-[#009BAA] font-bold whitespace-pre-wrap break-words">
                           {store.offer_details}
                         </p>
                       </div>
                     )}
                     
                     {/* 底部按鈕列 */}
-                    <div className="grid grid-cols-3 border-t border-slate-100">
+                    <div className={`grid ${store.attachment_url ? 'grid-cols-4' : 'grid-cols-3'} border-t border-slate-100`}>
                       <button 
                         onClick={() => toggleExpand(store.id)}
                         className={`flex items-center justify-center gap-1 py-3 text-sm font-bold border-r border-slate-100 transition-colors ${
@@ -286,6 +437,16 @@ const ContractStoreSearch = () => {
                       >
                         <Navigation size={16} /> 地圖
                       </a>
+                      {store.attachment_url && (
+                        <a 
+                          href={store.attachment_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="flex items-center justify-center gap-1 py-3 bg-white hover:bg-slate-50 text-[#964696] text-sm font-bold transition-colors"
+                        >
+                          <FileText size={16} /> 附件
+                        </a>
+                      )}
                     </div>
                   </div>
               ))}
@@ -295,53 +456,33 @@ const ContractStoreSearch = () => {
             <div className="hidden md:block bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse">
-                  <thead className="bg-slate-50 border-b border-slate-200">
-                    <tr>
-                      <th className="px-6 py-3 text-xs font-bold text-[#545454] uppercase tracking-wider">名稱 / 分類</th>
-                      <th className="px-6 py-3 text-xs font-bold text-[#545454] uppercase tracking-wider">聯絡資訊</th>
-                      <th className="px-6 py-3 text-xs font-bold text-[#545454] uppercase tracking-wider">詳細優惠</th>
-                      <th className="px-6 py-3 text-xs font-bold text-[#545454] uppercase tracking-wider text-right">距離</th>
-                    </tr>
+                  <thead className="bg-slate-50 border-b border-slate-200 sticky top-0 md:top-0 z-10 shadow-sm">
+                    {table.getHeaderGroups().map(headerGroup => (
+                      <tr key={headerGroup.id}>
+                        {headerGroup.headers.map(header => (
+                          <th key={header.id} className="px-6 py-3 text-xs font-bold text-[#545454] uppercase tracking-wider bg-slate-50">
+                            {header.isPlaceholder
+                              ? null
+                              : flexRender(
+                                  header.column.columnDef.header,
+                                  header.getContext()
+                                )}
+                          </th>
+                        ))}
+                      </tr>
+                    ))}
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {filteredStores.map((store) => (
-                      <tr key={store.id} className="hover:bg-slate-50 transition-colors">
-                        <td className="px-6 py-4">
-                          <div className="flex items-center gap-2">
-                            <span className="font-bold text-[#545454]">{store.name}</span>
-                            <span className="text-[10px] bg-[#964696]/10 text-[#964696] px-1.5 py-0.5 rounded font-bold uppercase whitespace-nowrap">{store.category}</span>
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 text-sm text-slate-600">
-                          <div className="flex items-center gap-1 mb-1 truncate max-w-[200px]">
-                            <MapPin size={14} className="text-slate-400" /> 
-                            <a href={`https://www.google.com/maps/search/?api=1&query=${store.lat},${store.lng}`} target="_blank" rel="noreferrer" className="hover:underline">
-                              {store.address}
-                            </a>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <Phone size={14} className="text-slate-400" /> 
-                            <span className="text-slate-600">{store.phone}</span>
-                            <a href={`tel:${store.phone}`} className="ml-1 px-2 py-0.5 bg-[#964696]/10 text-[#964696] text-[10px] rounded hover:bg-[#964696] hover:text-white transition-colors font-bold">
-                              撥打
-                            </a>
-                          </div>
-                          <div className="text-[14px] text-slate-400 mt-1 flex items-center gap-1">
-                            <Clock size={14} /> {store.valid_start && store.valid_end ? `${store.valid_start} ~ ${store.valid_end}` : '長期有效'}
-                          </div>
-                        </td>
-                        <td className="px-6 py-4">
-                          <div className="text-sm text-[#009BAA] font-bold leading-tight">
-                            {store.offer_details}
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 text-right">
-                          {store.distance !== undefined && (
-                            <span className="text-[#009BAA] font-bold text-sm">
-                              {store.distance < 1 ? `${(store.distance * 1000).toFixed(0)}m` : `${store.distance.toFixed(1)}km`}
-                            </span>
-                          )}
-                        </td>
+                    {table.getRowModel().rows.map(row => (
+                      <tr key={row.id} className="hover:bg-slate-50 transition-colors">
+                        {row.getVisibleCells().map(cell => (
+                          <td key={cell.id} className="px-6 py-4">
+                            {flexRender(
+                              cell.column.columnDef.cell,
+                              cell.getContext()
+                            )}
+                          </td>
+                        ))}
                       </tr>
                     ))}
                   </tbody>
@@ -349,7 +490,17 @@ const ContractStoreSearch = () => {
               </div>
             </div>
 
-            {filteredStores.length === 0 && (
+            {/* 載入更多偵測點 */}
+            <div ref={loaderRef} className="py-10 flex justify-center">
+              {isFetchingMore && (
+                <div className="flex items-center gap-2 text-slate-400 text-sm">
+                  <div className="w-5 h-5 border-2 border-[#964696] border-t-transparent rounded-full animate-spin"></div>
+                  載入中...
+                </div>
+              )}
+            </div>
+
+            {stores.length === 0 && !isLoading && (
               <div className="text-center py-10 bg-white rounded-xl border border-dashed border-slate-300">
                 <p className="text-slate-500">沒有找到符合 "{searchTerm}" 的廠商</p>
                 <button 
