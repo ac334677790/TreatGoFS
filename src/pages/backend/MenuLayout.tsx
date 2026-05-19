@@ -20,6 +20,7 @@ import './Datatablejs.css';
 import { StoreModal, ActivityModal } from './AdminModals';
 import { Store } from './../mockStores';
 import { supabase } from '../../lib/supabase';
+import { Navigate } from 'react-router-dom';
 
 // 註冊 DataTables 核心組件，此處不需要 jQuery
 DataTable.use(DT);
@@ -113,7 +114,6 @@ const UserDataTable = ({ data, loading }: { data: Store[], loading: boolean }) =
 
     // 最後一欄：按鈕
     {
-      data: {data},
       data: null,
       orderable: false,
       render: function (data, type, row) {
@@ -199,9 +199,25 @@ export default function App() {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [activeTab, setActiveTab] = useState('特約廠商管理');
   const [stores, setStores] = useState<Store[]>([]);
+  const [user, setUser] = useState<any>(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingStore, setEditingStore] = useState<Store | null>(null);
   const [loading, setLoading] = useState(true); // 預設為載入中
+
+  // 檢查登入狀態
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+      setAuthLoading(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
 
   // 從 stores 中提取不重複的分類列表
   const categories = useMemo(() => {
@@ -215,6 +231,8 @@ export default function App() {
   }, [stores]);
 
   const fetchStores = async () => {
+    if (!user) return;
+    setLoading(true);
     const { data, error } = await supabase
       .from('contract_stores')
       .select('*')
@@ -225,8 +243,18 @@ export default function App() {
   };
 
   useEffect(() => {
-    fetchStores();
-  }, []);
+    if (user) {
+      fetchStores();
+    }
+  }, [user]);
+
+  const handleLogout = async () => {
+    if (window.confirm('確定要登出嗎？')) {
+      await supabase.auth.signOut();
+      setStores([]);
+      setUser(null);
+    }
+  };
 
   // 橋接 DataTables 的原生 JavaScript 點擊事件到 React 狀態
   useEffect(() => {
@@ -355,6 +383,19 @@ export default function App() {
     { icon: Users, label: '特約廠商管理' },
   ];
 
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="w-10 h-10 border-4 border-[#964696] border-t-transparent rounded-full animate-spin"></div>
+      </div>
+    );
+  }
+
+  // 若未登入，顯示登入畫面
+  if (!user) {
+    return <Navigate to="/management/login" replace />;
+  }
+
   return (
     <div className="flex min-h-screen bg-slate-100 font-sans text-slate-900">
       {/* 側邊欄 */}
@@ -399,7 +440,7 @@ export default function App() {
 
         <div className="p-4 border-t border-white/10">
           <NavItem icon={HelpCircle} label="支援中心" collapsed={isCollapsed} />
-          <NavItem icon={LogOut} label="登出帳號" collapsed={isCollapsed} />
+          <NavItem icon={LogOut} label="登出帳號" collapsed={isCollapsed} onClick={handleLogout} />
         </div>
       </aside>
 
