@@ -1,15 +1,47 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
-import { ArrowLeft, FileUp, CheckCircle2, AlertCircle, Download } from 'lucide-react';
+import { ArrowLeft, FileUp, CheckCircle2, AlertCircle, Download, Lock, LogIn } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 
 const BulkUpload = () => {
+  const [user, setUser] = useState<any>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [uploading, setUploading] = useState(false);
   const [result, setResult] = useState<{ success: number; failed: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
   const navigate = useNavigate();
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+      setAuthLoading(false);
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      setUploading(true);
+      const { data, error } = await supabase.auth.signInWithPassword({ 
+        email: email.trim(), 
+        password 
+      });
+      if (error) throw error;
+      if (data.user) setUser(data.user);
+    } catch (error: any) {
+      alert('登入失敗：' + error.message);
+    } finally {
+      setUploading(false);
+    }
+  };
 
   const downloadSampleExcel = () => {
     const sampleData = [
@@ -138,6 +170,43 @@ const BulkUpload = () => {
     };
     reader.readAsBinaryString(file);
   };
+
+  if (authLoading) return <div className="flex h-screen items-center justify-center text-slate-500">驗證身分中...</div>;
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+        <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md border border-slate-100">
+          <div className="flex flex-col items-center mb-8">
+            <div className="bg-[#964696]/10 p-3 rounded-full mb-4">
+              <Lock className="text-[#964696]" size={32} />
+            </div>
+            <h1 className="text-2xl font-bold text-[#545454]">請先登入</h1>
+            <p className="text-slate-400 text-sm mt-1">此頁面僅供管理員存取</p>
+          </div>
+          <form onSubmit={handleLogin} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">電子郵件</label>
+              <input 
+                type="email" required value={email} onChange={e => setEmail(e.target.value)}
+                className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-[#964696] outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">密碼</label>
+              <input 
+                type="password" required value={password} onChange={e => setPassword(e.target.value)}
+                className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-[#964696] outline-none"
+              />
+            </div>
+            <button type="submit" disabled={uploading} className="w-full bg-[#964696] text-white py-2.5 rounded-lg font-bold flex items-center justify-center gap-2">
+              <LogIn size={20} /> {uploading ? '登入中...' : '登入'}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 p-4 md:p-8">

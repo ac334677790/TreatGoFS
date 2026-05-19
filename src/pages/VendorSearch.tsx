@@ -59,12 +59,22 @@ const VendorSearch = () => {
               setIsLoading(false);
             },
             () => {
-              setStores(data);
+              const sortedData = [...data].sort((a, b) => {
+                if (a.category === '餐飲' && b.category !== '餐飲') return -1;
+                if (a.category !== '餐飲' && b.category === '餐飲') return 1;
+                return 0;
+              });
+              setStores(sortedData);
               setIsLoading(false);
             }
           );
         } else {
-          setStores(data);
+          const sortedData = [...data].sort((a, b) => {
+            if (a.category === '餐飲' && b.category !== '餐飲') return -1;
+            if (a.category !== '餐飲' && b.category === '餐飲') return 1;
+            return 0;
+          });
+          setStores(sortedData);
           setIsLoading(false);
         }
       }
@@ -347,7 +357,17 @@ const VendorSearch = () => {
                           </div>
                         </td>
                         <td className="px-6 py-4 text-sm text-slate-600">
-                          <div className="flex items-center gap-1 mb-1 truncate max-w-[200px]"><MapPin size={14} className="text-slate-400" /> {store.address}</div>
+                          <div className="flex items-center gap-1 mb-1 whitespace-pre-wrap break-words">
+                            <MapPin size={14} className="text-slate-400" /> 
+                            <a 
+                              href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${store.name} ${store.address}`)}`} 
+                              target="_blank" 
+                              rel="noreferrer" 
+                              className="hover:underline"
+                            >
+                              {store.address}
+                            </a>
+                          </div>
                           <div className="flex items-center gap-2">
                             <Phone size={14} className="text-slate-400" /> 
                             <span className="text-slate-600">{store.phone}</span>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { MapPin, Phone, Search, Navigation, ExternalLink, Clock, ChevronDown, ChevronUp, Gift, FileText } from 'lucide-react';
+import { MapPin, Phone, Search, Navigation, ExternalLink, Clock, ChevronDown, ChevronUp, Gift, FileText, Megaphone, ArrowRight } from 'lucide-react';
 import { Store } from './mockStores'; // 僅保留型別定義
 import { supabase } from '../lib/supabase';
 import {
@@ -14,6 +14,7 @@ const PAGE_SIZE = 15;
 
 const ContractStoreSearch = () => {
   const [stores, setStores] = useState<any[]>([]);
+  const [activities, setActivities] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -23,6 +24,7 @@ const ContractStoreSearch = () => {
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [isScrolled, setIsScrolled] = useState(false);
   const [showStickySearch, setShowStickySearch] = useState(false);
+  const [totalResults, setTotalResults] = useState<number>(0);
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(true);
   const loaderRef = useRef<HTMLDivElement>(null);
@@ -35,9 +37,9 @@ const ContractStoreSearch = () => {
       columnHelper.accessor('name', {
       header: '名稱 / 分類',
       cell: (info) => (
-        <div className="flex flex-col items-start gap-2 min-w-[200px]">
+        <div className="flex flex-col items-start gap-1 min-w-[200px]">
           <div>
-            <span className="text-[10px] bg-[#964696]/10 text-[#964696] px-1.5 py-0.5 rounded font-bold uppercase whitespace-nowrap">
+            <span className="text-[14px] bg-[#964696]/10 text-[#964696] px-1.5 py-0.5 rounded font-bold uppercase whitespace-nowrap">
               {info.row.original.category}
             </span>
           </div>
@@ -54,10 +56,10 @@ const ContractStoreSearch = () => {
         const store = info.row.original;
         return (
           <div className="text-sm text-slate-600">
-            <div className="flex items-center gap-1 mb-1 truncate max-w-[200px]">
-              <MapPin size={14} className="text-slate-400" />
+            <div className="flex items-center gap-1 mb-1 whitespace-pre-wrap break-words">
+              <MapPin size={14} className="text-slate-400 flex-shrink-0" />
               <a
-                href={`https://www.google.com/maps/search/?api=1&query=${store.lat},${store.lng}`}
+                href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${store.name} ${store.address}`)}`}
                 target="_blank"
                 rel="noreferrer"
                 className="hover:underline"
@@ -95,7 +97,7 @@ const ContractStoreSearch = () => {
               href={url}
               target="_blank"
               rel="noreferrer"
-              className="flex items-center gap-1 text-[#964696] hover:underline font-bold"
+              className="flex items-center gap-1 text-[#964696] hover:underline font-bold whitespace-nowrap"
             >
               <FileText size={16} /> 查看
             </a>
@@ -148,6 +150,36 @@ const ContractStoreSearch = () => {
     fetchCategories();
   }, []);
 
+  // 取得最新活動
+  useEffect(() => {
+    const fetchActiveActivities = async () => {
+      const today = new Date().toISOString().split('T')[0];
+      const { data } = await supabase
+        .from('activities')
+        .select('*')
+        .eq('is_active', true)
+        .or(`end_date.is.null,end_date.gte.${today}`)
+        .order('created_at', { ascending: false });
+      
+      if (data) setActivities(data);
+    };
+    fetchActiveActivities();
+  }, []);
+
+  // 輔助函式：計算距離公式 (Haversine Formula) - 回傳單位: 公里
+  const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+    if (!lat1 || !lon1 || !lat2 || !lon2) return 99999;
+    const R = 6371; 
+    const dLat = (lat2 - lat1) * (Math.PI / 180);
+    const dLon = (lon2 - lon1) * (Math.PI / 180);
+    const a = 
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) * 
+      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  };
+
   // 2. 核心抓取資料函式
   const fetchStores = async (pageNum: number, isNewSearch: boolean) => {
     if (pageNum === 0) setIsLoading(true);
@@ -176,8 +208,15 @@ const ContractStoreSearch = () => {
     if (error) {
       console.error('Error fetching stores:', error);
     } else if (data) {
-      setStores(prev => isNewSearch ? data : [...prev, ...data]);
+      const sortedData = [...data].sort((a, b) => {
+        if (a.category === '餐飲類' && b.category !== '餐飲類') {
+          return -1;}
+        if (a.category !== '餐飲類' && b.category === '餐飲類') return 1;
+        return 0;
+      });
+      setStores(prev => isNewSearch ? sortedData : [...prev, ...sortedData]);
       setHasMore(count ? (pageNum + 1) * PAGE_SIZE < count : false);
+      if (count !== null) setTotalResults(count);
     }
     
     setIsLoading(false);
@@ -191,33 +230,50 @@ const ContractStoreSearch = () => {
     }
   }, [page]);
 
+  // 輔助函式：取得距離排序且符合過濾條件的資料
+  const fetchFilteredDistanceStores = async (lat: number, lng: number) => {
+    setIsLoading(true);
+    let query = supabase.from('contract_stores').select('*', { count: 'exact' });
+
+    // 套用目前的過濾條件
+    if (selectedCategory !== '全部') {
+      query = query.eq('category', selectedCategory);
+    }
+
+    if (searchTerm) {
+      query = query.or(`name.ilike.%${searchTerm}%,address.ilike.%${searchTerm}%,category.ilike.%${searchTerm}%`);
+    }
+
+    // 距離排序模式下，一次抓取較多資料（上限 300）進行前端排序
+    const { data, count } = await query.limit(300);
+
+    if (data) {
+      const storesWithDistance = data.map(store => ({
+        ...store,
+        distance: calculateDistance(lat, lng, store.lat, store.lng)
+      })).sort((a, b) => a.distance - b.distance);
+
+      setStores(storesWithDistance);
+      if (count !== null) setTotalResults(count);
+      setSortMode('distance');
+      setHasMore(false); // 距離模式下關閉分頁
+    }
+    setIsLoading(false);
+  };
+
   // 當搜尋或分類改變時，重置回第一頁
   useEffect(() => {
-    if (sortMode === 'distance') return;
-    if (page !== 0) {
-      setPage(0);
-    } else {
-      fetchStores(0, true);
+    if (sortMode === 'distance') {
+      // 如果已在距離排序模式且有位置資訊，切換條件時應重新抓取過濾後的列表
+      if (userLocation) fetchFilteredDistanceStores(userLocation.lat, userLocation.lng);
+      return;
     }
+    if (page !== 0) setPage(0);
+    else fetchStores(0, true);
   }, [searchTerm, selectedCategory]);
-
-  // 計算距離公式 (Haversine Formula) - 回傳單位: 公里
-  const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
-    if (!lat1 || !lon1 || !lat2 || !lon2) return 99999;
-    const R = 6371; 
-    const dLat = (lat2 - lat1) * (Math.PI / 180);
-    const dLon = (lon2 - lon1) * (Math.PI / 180);
-    const a = 
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) * 
-      Math.sin(dLon / 2) * Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
-  };
 
   // 2. 處理定位與距離排序
   const handleLocateMe = async () => {
-    // 如果已經是距離排序模式，則點擊後取消排序並恢復原始 ID 順序
     if (sortMode === 'distance') {
       setSortMode('default');
       setUserLocation(null);
@@ -236,22 +292,7 @@ const ContractStoreSearch = () => {
       async (position: GeolocationPosition) => {
         const { latitude, longitude } = position.coords;
         setUserLocation({ lat: latitude, lng: longitude });
-
-        setIsLoading(true);
-        // 距離排序模式下，一次抓取較多資料進行前端排序
-        const { data } = await supabase.from('contract_stores').select('*').limit(300);
-        
-        if (data) {
-          const storesWithDistance = data.map(store => ({
-            ...store,
-            distance: calculateDistance(latitude, longitude, store.lat, store.lng)
-          })).sort((a, b) => a.distance - b.distance);
-          
-          setStores(storesWithDistance);
-          setSortMode('distance');
-          setHasMore(false); // 距離模式下暫時關閉分頁
-        }
-        setIsLoading(false);
+        await fetchFilteredDistanceStores(latitude, longitude);
       },
       (error: GeolocationPositionError) => {
         console.error(error);
@@ -328,6 +369,37 @@ const ContractStoreSearch = () => {
       </header>
 
       <main className="max-w-5xl mx-auto px-4 py-6">
+                {/* 最新活動區塊 */}
+        {activities.length > 0 && (
+          <div className="mb-6 animate-in fade-in duration-500">
+            <div className="flex items-center gap-2 mb-3">
+              <Megaphone className="text-[#964696] animate-pulse" size={20} />
+              <h2 className="text-lg font-bold text-[#545454]">最新活動</h2>
+            </div>
+            <div className="flex gap-4 overflow-x-auto pb-2 scrollbar-hide snap-x">
+              {activities.map((act) => (
+                <div key={act.id} className="min-w-[280px] md:min-w-[320px] bg-gradient-to-br from-[#964696] to-[#7a397a] rounded-2xl p-5 shadow-lg text-white snap-center relative overflow-hidden group">
+                  <div className="relative z-10">
+                    <h3 className="font-bold text-lg mb-1 line-clamp-1">{act.title}</h3>
+                    <p className="text-white/80 text-sm line-clamp-2 mb-4 h-10">{act.content}</p>
+                    <div className="flex justify-between items-center">
+                      <span className="text-[10px] bg-white/20 px-2 py-1 rounded-full border border-white/30">
+                        {act.start_date && act.end_date ? `${act.start_date} ~ ${act.end_date}` : '進行中'}
+                      </span>
+                      {act.link_url && (
+                        <a href={act.link_url} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-xs font-bold bg-white text-[#964696] px-3 py-1.5 rounded-lg hover:bg-[#009BAA] hover:text-white transition-all">
+                          看詳情 <ArrowRight size={14} />
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                  {/* 背景裝飾 */}
+                  <div className="absolute -right-4 -bottom-4 w-24 h-24 bg-white/10 rounded-full blur-2xl group-hover:scale-150 transition-transform duration-500"></div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         
         {/* 控制面板：搜尋與定位 */}
         <div className={isScrolled ? 'opacity-0 h-0 overflow-hidden mb-0' : 'mb-6 transition-all duration-300'}>
@@ -350,7 +422,8 @@ const ContractStoreSearch = () => {
         ) : (
           <>
             <div className="text-sm text-slate-500 mb-4 flex justify-between items-end">
-              <span>已顯示 {stores.length} 家廠商</span>
+              {/* <span>已載入 {stores.length} 家</span> */}
+              <span className="font-medium text-slate-700">總計: {totalResults} 家</span>
               {userLocation && <span className="text-xs text-[#009BAA] font-bold">● 已定位目前位置</span>}
             </div>
 
@@ -381,7 +454,7 @@ const ContractStoreSearch = () => {
                         <div className="flex items-start gap-2">
                           <MapPin className="w-4 h-4 mt-0.5 text-slate-400 flex-shrink-0" />
                           <a 
-                            href={`https://www.google.com/maps/search/?api=1&query=${store.lat},${store.lng}`}
+                            href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${store.name} ${store.address}`)}`}
                             target="_blank"
                             rel="noreferrer"
                             className="hover:text-[#964696] hover:underline text-left leading-tight whitespace-pre-wrap break-words"
@@ -430,7 +503,7 @@ const ContractStoreSearch = () => {
                         <Phone size={16} /> 撥打
                       </a>
                       <a 
-                        href={`https://www.google.com/maps/search/?api=1&query=${store.lat},${store.lng}`}
+                        href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${store.name} ${store.address}`)}`}
                         target="_blank"
                         rel="noreferrer"
                         className="flex items-center justify-center gap-1 py-3 bg-white hover:bg-slate-50 text-slate-600 text-sm font-bold transition-colors"

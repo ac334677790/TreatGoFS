@@ -1,22 +1,25 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
 import { Store } from './mockStores';
-import { Edit2, Trash2, Plus, ArrowLeft, Upload, X, Search } from 'lucide-react';
+import { LogOut, Lock, LogIn, LayoutDashboard, Store as StoreIcon, Megaphone, Upload, ChevronRight, Search, Plus, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import {
-  createColumnHelper,
-  flexRender,
-  getCoreRowModel,
-  useReactTable,
-} from '@tanstack/react-table';
+import AdminStoreTable from './AdminStoreTable';
+import AdminActivityTable from './AdminActivityTable';
+import { StoreModal, ActivityModal } from './backend/AdminModals';
 
 const AdminDashboard = () => {
   const [stores, setStores] = useState<Store[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [activities, setActivities] = useState<any[]>([]);
+  const [activeTab, setActiveTab] = useState<'stores' | 'activities'>('stores');
+  const [user, setUser] = useState<any>(null);
+  const [authLoading, setAuthLoading] = useState(true); // 驗證登入中
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false); // 抓取資料中
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingStore, setEditingStore] = useState<Store | null>(null);
+  const [editingActivity, setEditingActivity] = useState<any | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
-  // 新增各欄位搜尋狀態
   const [columnFilters, setColumnFilters] = useState({
     name: '',
     category: '',
@@ -24,6 +27,7 @@ const AdminDashboard = () => {
   });
 
   const fetchStores = async () => {
+    console.log('Fetching stores from Supabase...');
     setLoading(true);
     const { data, error } = await supabase
       .from('contract_stores')
@@ -34,11 +38,81 @@ const AdminDashboard = () => {
     setLoading(false);
   };
 
+  const fetchActivities = async () => {
+    setLoading(true);
+    const { data, error } = await supabase
+      .from('activities')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (!error && data) setActivities(data);
+    setLoading(false);
+  };
+
+  // 檢查登入狀態
   useEffect(() => {
-    fetchStores();
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+      setAuthLoading(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
+  // 當使用者登入成功後再抓取資料
+  useEffect(() => {
+    console.log('User state changed:', user);
+    if (user) {
+      if (activeTab === 'stores') {
+        fetchStores();
+      } else {
+        fetchActivities();
+      }
+    }
+  }, [activeTab,user]);
+
+  // 從 stores 中提取不重複的分類列表
+  const categories = useMemo(() => {
+    const uniqueCategories = new Set<string>();
+    stores.forEach(store => {
+      if (store.category) {
+        uniqueCategories.add(store.category);
+      }
+    });
+    return Array.from(uniqueCategories).sort();
+  }, [stores]);
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      setLoading(true);
+      const { data, error } = await supabase.auth.signInWithPassword({ 
+        email: email.trim(), 
+        password 
+      });
+      if (error) throw error;
+      if (data.user) setUser(data.user);
+    } catch (error: any) {
+      alert('登入失敗：' + error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    if (window.confirm('確定要登出嗎？')) {
+      await supabase.auth.signOut();
+      setStores([]);
+    }
+  };
+
   const handleEditClick = (store: Store) => {
+    if (store.valid_start) {
+      console.info('Editing store:', store.valid_start.substring(0, 10).replace(/\./g, '/'));
+    }
     setEditingStore(store);
     setIsModalOpen(true);
   };
@@ -59,7 +133,6 @@ const AdminDashboard = () => {
     setIsModalOpen(true);
   };
 
-  // 輔助函式：地理編碼 (地址轉經緯度)
   const getCoordinates = async (address: string) => {
     try {
       const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
@@ -80,6 +153,50 @@ const AdminDashboard = () => {
     e.preventDefault();
     if (!editingStore) return;
 
+    const oldAttachmentUrl = editingStore.attachment_url; // 儲存原始的附件 URL
+    let newAttachmentUrl: string | null = oldAttachmentUrl; // 將要儲存到資料庫的 URL
+
+    // 處理檔案上傳
+    const fileToUpload = (editingStore as any).file as File | undefined;
+    if (fileToUpload) {
+      const fileExt = fileToUpload.name.split('.').pop();
+      let fileName: string;
+      // 如果是編輯現有商店，使用商店ID作為檔名；否則使用時間戳+隨機數
+      if (editingStore.id) {
+        fileName = `${editingStore.id}.${fileExt}`;
+      } else {
+        fileName = `${Date.now()}-${Math.floor(Math.random() * 1000)}.${fileExt}`;
+      }
+      const filePath = `store-attachments/${fileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('attachments')
+        .upload(filePath, fileToUpload);
+
+      if (uploadError) {
+        alert('附件上傳失敗：' + uploadError.message);
+        return;
+      }
+
+      const { data: urlData } = supabase.storage
+        .from('attachments')
+        .getPublicUrl(filePath);
+      newAttachmentUrl = urlData.publicUrl;
+
+      // 如果原本有舊附件，且新舊附件的儲存路徑不同，則刪除舊檔案
+      if (oldAttachmentUrl && oldAttachmentUrl !== newAttachmentUrl) {
+        const bucketName = 'attachments';
+        const oldPath = oldAttachmentUrl.split(`${bucketName}/`)[1];
+        const newPath = newAttachmentUrl.split(`${bucketName}/`)[1];
+        if (oldPath && oldPath !== newPath) { // 確保不是嘗試刪除同一個檔案
+          await supabase.storage.from(bucketName).remove([oldPath]);
+        }
+      }
+    } else if (oldAttachmentUrl && !editingStore.attachment_url) {
+      // 如果沒有上傳新檔案，但附件 URL 被清空了 (在 Modal 中點擊了移除按鈕)
+      newAttachmentUrl = null;
+    } // 否則 (沒有上傳新檔案，且附件 URL 未被清空)，newAttachmentUrl 保持為 oldAttachmentUrl
+
     // 儲存前自動根據地址取得經緯度
     const coords = await getCoordinates(editingStore.address);
 
@@ -89,9 +206,9 @@ const AdminDashboard = () => {
       address: editingStore.address,
       phone: editingStore.phone,
       offer_details: editingStore.offer_details,
-      attachment_url: editingStore.attachment_url,
-      valid_start: editingStore.valid_start,
-      valid_end: editingStore.valid_end,
+      attachment_url: newAttachmentUrl,
+      valid_start: editingStore.valid_start || null, // 空字串轉為 null 存入資料庫
+      valid_end: editingStore.valid_end || null,
       lat: coords.lat,
       lng: coords.lng,
     };
@@ -109,347 +226,238 @@ const AdminDashboard = () => {
     }
   };
 
+  const handleSaveActivity = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingActivity) return;
+
+    const activityData = {
+      title: editingActivity.title,
+      content: editingActivity.content,
+      link_url: editingActivity.link_url,
+      start_date: editingActivity.start_date || null,
+      end_date: editingActivity.end_date || null,
+      is_active: editingActivity.is_active ?? true,
+    };
+
+    const { error } = editingActivity.id
+      ? await supabase.from('activities').update(activityData).eq('id', editingActivity.id)
+      : await supabase.from('activities').insert([activityData]);
+
+    if (!error) {
+      setIsModalOpen(false);
+      setEditingActivity(null);
+      fetchActivities();
+    } else {
+      alert('儲存失敗：' + error.message);
+    }
+  };
+
   const handleDelete = async (id: number) => {
     if (!window.confirm('確定要刪除這家廠商嗎？')) return;
     const { error } = await supabase.from('contract_stores').delete().eq('id', id);
     if (!error) fetchStores();
   };
 
-  // 綜合過濾邏輯：全域搜尋 + 各欄位搜尋
-  const filteredStores = stores.filter(store => {
-    // 全域關鍵字搜尋 (OR 邏輯)
-    const globalMatch = !searchTerm || [store.name, store.category, store.address].some(
-      val => val?.toLowerCase().includes(searchTerm.toLowerCase())
-    );
-
-    // 各欄位精確搜尋 (AND 邏輯)
-    const nameMatch = !columnFilters.name || store.name?.toLowerCase().includes(columnFilters.name.toLowerCase());
-    const categoryMatch = !columnFilters.category || store.category?.toLowerCase().includes(columnFilters.category.toLowerCase());
-    const addressMatch = !columnFilters.address || store.address?.toLowerCase().includes(columnFilters.address.toLowerCase());
-
-    return globalMatch && nameMatch && categoryMatch && addressMatch;
-  });
-
-  // 清除所有過濾條件
-  const clearFilters = () => {
-    setSearchTerm('');
-    setColumnFilters({
-      name: '',
-      category: '',
-      address: '',
-    });
+  const handleDeleteActivity = async (id: number) => {
+    if (!window.confirm('確定要刪除這個活動嗎？')) return;
+    const { error } = await supabase.from('activities').delete().eq('id', id);
+    if (!error) fetchActivities();
   };
 
-  // TanStack Table 欄位定義
-  const columnHelper = createColumnHelper<Store>();
-  const columns = useMemo(() => [
-    columnHelper.accessor('id', {
-      header: 'ID',
-      cell: info => <span className="text-slate-500 text-xs">{info.getValue()}</span>,
-    }),
-    columnHelper.accessor('name', {
-      header: '名稱',
-      cell: info => <span className="font-medium text-slate-800">{info.getValue()}</span>,
-    }),
-    columnHelper.accessor('category', {
-      header: '分類',
-      cell: info => (
-        <span className="bg-slate-100 px-2 py-1 rounded text-slate-600 text-xs">
-          {info.getValue()}
-        </span>
-      ),
-    }),
-    columnHelper.accessor('address', {
-      header: '地址',
-      cell: info => <div className="text-slate-600 min-w-[200px] max-w-[300px] truncate">{info.getValue()}</div>,
-    }),
-    columnHelper.display({
-      id: 'valid_period',
-      header: '優惠期間',
-      cell: info => {
-        const store = info.row.original;
-        return (
-          <span className="text-slate-500 whitespace-nowrap">
-            {store.valid_start && store.valid_end ? `${store.valid_start} ~ ${store.valid_end}` : '長期有效'}
-          </span>
-        );
-      },
-    }),
-    columnHelper.display({
-      id: 'actions',
-      header: () => <div className="text-center">操作</div>,
-      cell: info => (
-        <div className="flex justify-center gap-3">
-          <button 
-            onClick={() => handleEditClick(info.row.original)}
-            className="text-[#964696] hover:opacity-70 transition-colors"
-            title="編輯"
-          >
-            <Edit2 size={18} />
-          </button>
-          <button 
-            onClick={() => handleDelete(info.row.original.id)}
-            className="text-red-500 hover:text-red-700 transition-colors"
-            title="刪除"
-          >
-            <Trash2 size={18} />
-          </button>
-        </div>
-      ),
-    }),
-  ], []);
+  if (authLoading) return <DashboardSkeleton />;
 
-  // 初始化 Table 實例
-  const table = useReactTable({
-    data: filteredStores,
-    columns,
-    getCoreRowModel: getCoreRowModel(),
-  });
-
-  return (
-    <div className="min-h-screen bg-slate-50 p-4 md:p-8">
-      <div className="max-w-6xl mx-auto">
-        <div className="flex flex-col md:flex-row md:items-end justify-between mb-8 gap-4">
-          <div>
-            <Link to="/" className="text-[#964696] flex items-center gap-1 mb-2 hover:underline font-medium">
-              <ArrowLeft size={16} /> 返回搜尋頁
-            </Link>
-            <h1 className="text-2xl font-bold text-[#545454]">廠商資料管理後台</h1>
-          </div>
-          <div className="flex flex-col md:flex-row gap-3 flex-grow max-w-2xl justify-end">
-            <div className="relative flex-grow max-w-md">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-              <input 
-                type="text"
-                placeholder="搜尋名稱、分類或地址..."
-                className="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#964696] bg-white transition-all text-sm"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-              />
-              {searchTerm && (
-                <button onClick={() => setSearchTerm('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
-                  <X size={14} />
-                </button>
-              )}
+  // 若未登入，顯示登入畫面
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4 font-sans">
+        <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md border border-slate-100">
+          <div className="flex flex-col items-center mb-8">
+            <div className="bg-[#964696]/10 p-3 rounded-full mb-4">
+              <Lock className="text-[#964696]" size={32} />
             </div>
-            <Link to="/admin/upload" className="flex items-center gap-2 bg-[#009BAA] text-white px-4 py-2 rounded-lg hover:opacity-90 transition-colors shadow-sm">
-              <Upload size={18} /> 批次上傳
-            </Link>
-            <button 
-              onClick={handleAddClick}
-              className="flex items-center gap-2 bg-[#964696] text-white px-4 py-2 rounded-lg hover:opacity-90 transition-colors shadow-sm"
-            >
-              <Plus size={18} /> 新增廠商
-            </button>
+            <h1 className="text-2xl font-bold text-[#545454]">管理後台登入</h1>
+            <p className="text-slate-400 text-sm mt-1">請輸入管理員帳號密碼</p>
           </div>
-        </div>
-
-        <div className="flex justify-end mb-2">
-          <button 
-            onClick={clearFilters}
-            className="text-xs text-slate-500 hover:text-[#964696] underline"
-          >
-            清除所有搜尋條件
-          </button>
-        </div>
-
-        <div className="bg-white rounded-xl shadow-sm overflow-x-auto border border-slate-200">
-          <table className="w-full text-left border-collapse">
-            <thead className="bg-slate-50 border-b border-slate-200">
-              <tr>
-                {/* <th className="px-6 py-4 text-sm font-semibold text-slate-600">
-                  ID
-                </th> */}
-                <th className="px-6 py-4 text-sm font-semibold text-slate-600">
-                  <div className="flex flex-col gap-2">
-                    <span>名稱</span>
-                    <input 
-                      type="text" 
-                      placeholder="搜尋名稱..." 
-                      className="font-normal text-xs px-2 py-1 border rounded focus:ring-1 focus:ring-[#964696] outline-none"
-                      value={columnFilters.name}
-                      onChange={(e) => setColumnFilters({...columnFilters, name: e.target.value})}
-                    />
-                  </div>
-                </th>
-                <th className="px-6 py-4 text-sm font-semibold text-slate-600">
-                  <div className="flex flex-col gap-2">
-                    <span>分類</span>
-                    <input 
-                      type="text" 
-                      placeholder="搜尋分類..." 
-                      className="font-normal text-xs px-2 py-1 border rounded focus:ring-1 focus:ring-[#964696] outline-none"
-                      value={columnFilters.category}
-                      onChange={(e) => setColumnFilters({...columnFilters, category: e.target.value})}
-                    />
-                  </div>
-                </th>
-                <th className="px-6 py-4 text-sm font-semibold text-slate-600">
-                  <div className="flex flex-col gap-2">
-                    <span>地址</span>
-                    <input 
-                      type="text" 
-                      placeholder="搜尋地址..." 
-                      className="font-normal text-xs px-2 py-1 border rounded focus:ring-1 focus:ring-[#964696] outline-none"
-                      value={columnFilters.address}
-                      onChange={(e) => setColumnFilters({...columnFilters, address: e.target.value})}
-                    />
-                  </div>
-                </th>
-                <th className="px-6 py-4 text-sm font-semibold text-slate-600 align-top whitespace-nowrap">優惠期間</th>
-                <th className="px-6 py-4 text-sm font-semibold text-slate-600 text-center align-top whitespace-nowrap">操作</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {loading ? (
-                <tr><td colSpan={6} className="px-6 py-10 text-center text-slate-400">載入中...</td></tr>
-              ) : filteredStores.length === 0 ? (
-                <tr><td colSpan={6} className="px-6 py-10 text-center text-slate-400">找不到符合條件的廠商</td></tr>
-              ) : filteredStores.map((store) => (
-                <tr key={store.id} className="hover:bg-slate-50 transition-colors">
-                  {/* <td className="px-6 py-4 text-sm text-slate-500">{store.id}</td> */}
-                  <td className="px-6 py-4 text-sm font-medium text-slate-800">{store.name}</td>
-                  <td className="px-6 py-4 text-sm">
-                    <span className="bg-slate-100 px-2 py-1 rounded text-slate-600 text-xs">
-                      {store.category}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 text-sm text-slate-600 min-w-[200px]">{store.address}</td>
-                  <td className="px-6 py-4 text-sm text-slate-500 whitespace-nowrap">
-                    {store.valid_start && store.valid_end ? `${store.valid_start} ~ ${store.valid_end}` : '長期有效'}
-                  </td>
-                  <td className="px-6 py-4 text-sm whitespace-nowrap">
-                    <div className="flex justify-center gap-3">
-                      <button 
-                        onClick={() => handleEditClick(store)}
-                        className="text-[#964696] hover:opacity-70 transition-colors"
-                      >
-                        <Edit2 size={18} />
-                      </button>
-                      <button 
-                        onClick={() => handleDelete(store.id)}
-                        className="text-red-500 hover:text-red-700 transition-colors"
-                      >
-                        <Trash2 size={18} />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <form onSubmit={handleLogin} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">電子郵件</label>
+              <input 
+                type="email" required value={email} onChange={e => setEmail(e.target.value)}
+                className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-[#964696] outline-none transition-all"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">密碼</label>
+              <input 
+                type="password" required value={password} onChange={e => setPassword(e.target.value)}
+                className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-[#964696] outline-none transition-all"
+              />
+            </div>
+            <button type="submit" disabled={loading} className="w-full bg-[#964696] text-white py-2.5 rounded-lg font-bold hover:opacity-90 transition-all flex items-center justify-center gap-2">
+              <LogIn size={20} /> {loading ? '登入中...' : '登入'}
+            </button>
+          </form>
         </div>
       </div>
+    );
+  }
 
-      {/* 編輯 Modal */}
-      {isModalOpen && editingStore && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-            <div className="sticky top-0 bg-white px-6 py-4 border-b border-slate-100 flex justify-between items-center">
-              <h2 className="text-xl font-bold text-[#545454]">{editingStore.id ? '編輯商店資料' : '新增商店資料'}</h2>
-              <button onClick={() => setIsModalOpen(false)} className="text-slate-400 hover:text-slate-600">
-                <X size={24} />
-              </button>
+  const menuItems = [
+    { id: 'stores', label: '廠商管理', icon: StoreIcon },
+    { id: 'activities', label: '活動管理', icon: Megaphone },
+  ];
+
+  return (
+    <div className="min-h-screen bg-slate-50 flex flex-col md:flex-row">
+      {/* 側邊導覽列 */}
+      <aside className="w-full md:w-64 bg-[#2D3748] text-white flex-shrink-0 flex flex-col min-h-screen">
+        <div className="p-6">
+          <div className="flex items-center gap-3 mb-8">
+            <div className="bg-[#964696] p-2 rounded-lg">
+              <LayoutDashboard size={24} />
             </div>
-
-            <form onSubmit={handleSave} className="p-6 space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <label className="text-sm font-medium text-slate-700">商店名稱</label>
-                  <input 
-                    type="text" 
-                    required
-                    value={editingStore.name || ''}
-                    onChange={e => setEditingStore(prev => prev ? {...prev, name: e.target.value} : null)}
-                    className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-[#964696] outline-none"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-sm font-medium text-slate-700">分類</label>
-                  <input 
-                    type="text"
-                    value={editingStore.category || ''}
-                    onChange={e => setEditingStore(prev => prev ? {...prev, category: e.target.value} : null)}
-                    className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-[#964696] outline-none"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-sm font-medium text-slate-700">地址</label>
-                  <input 
-                    type="text"
-                    value={editingStore.address || ''}
-                    onChange={e => setEditingStore(prev => prev ? {...prev, address: e.target.value} : null)}
-                    className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-[#964696] outline-none"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-sm font-medium text-slate-700">電話</label>
-                  <input 
-                    type="text"
-                    value={editingStore.phone || ''}
-                    onChange={e => setEditingStore(prev => prev ? {...prev, phone: e.target.value} : null)}
-                    className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-[#964696] outline-none"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-sm font-medium text-slate-700">優惠期間</label>
-                  <div className="flex items-center gap-2">
-                    <input 
-                      type="date"
-                      value={editingStore.valid_start?.replace(/\//g, '-') || ''}
-                      onChange={e => setEditingStore(prev => prev ? {...prev, valid_start: e.target.value} : null)}
-                      className="w-full px-3 py-2 border rounded-lg text-sm"
-                    />
-                    <span>~</span>
-                    <input 
-                      type="date"
-                      value={editingStore.valid_end?.replace(/\//g, '-') || ''}
-                      onChange={e => setEditingStore(prev => prev ? {...prev, valid_end: e.target.value} : null)}
-                      className="w-full px-3 py-2 border rounded-lg text-sm"
-                    />
-                  </div>
-                </div>
-                <div className="space-y-1 md:col-span-2">
-                  <label className="text-sm font-medium text-slate-700">優惠內容</label>
-                  <textarea 
-                    rows={3}
-                    value={editingStore.offer_details || ''}
-                    onChange={e => setEditingStore(prev => prev ? {...prev, offer_details: e.target.value} : null)}
-                    className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-[#964696] outline-none"
-                  />
-                </div>
-                <div className="space-y-1 md:col-span-2">
-                  <label className="text-sm font-medium text-slate-700">附件網址 (PDF 或圖片連結)</label>
-                  <input 
-                    type="text"
-                    value={editingStore.attachment_url || ''}
-                    onChange={e => setEditingStore(prev => prev ? {...prev, attachment_url: e.target.value} : null)}
-                    placeholder="https://example.com/file.pdf"
-                    className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-[#964696] outline-none"
-                  />
-                </div>
-              </div>
-              <div className="pt-4 flex gap-3">
-                <button 
-                  type="button"
-                  onClick={() => setIsModalOpen(false)}
-                  className="flex-1 px-4 py-2 border border-slate-200 text-slate-600 rounded-lg hover:bg-slate-50 transition-colors"
-                >
-                  取消
-                </button>
-                <button 
-                  type="submit"
-                  className="flex-1 px-4 py-2 bg-[#964696] text-white rounded-lg hover:opacity-90 transition-colors shadow-sm"
-                >
-                  儲存變更
-                </button>
-              </div>
-            </form>
+            <h2 className="font-bold text-xl tracking-wider">管理系統</h2>
           </div>
+          
+          <nav className="space-y-1">
+            {menuItems.map((item) => (
+              <button
+                key={item.id}
+                onClick={() => setActiveTab(item.id as any)}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${
+                  activeTab === item.id 
+                    ? 'bg-[#964696] text-white shadow-lg' 
+                    : 'text-slate-400 hover:bg-white/5 hover:text-white'
+                }`}
+              >
+                <item.icon size={20} />
+                <span className="font-medium">{item.label}</span>
+              </button>
+            ))}
+            <Link 
+              to="/admin/upload"
+              className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-slate-400 hover:bg-white/5 hover:text-white transition-all"
+            >
+              <Upload size={20} />
+              <span className="font-medium">批次上傳廠商</span>
+            </Link>
+          </nav>
         </div>
-      )}
+
+        <div className="mt-auto p-6 border-t border-white/10">
+          <div className="mb-4">
+            <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">目前帳號</p>
+            <p className="text-xs text-slate-300 truncate">{user.email}</p>
+          </div>
+          <button 
+            onClick={handleLogout}
+            className="w-full flex items-center justify-center gap-2 px-4 py-2 border border-white/20 rounded-lg text-sm text-white hover:bg-red-500/10 hover:border-red-500/50 hover:text-red-400 transition-all"
+          >
+            <LogOut size={16} /> 登出系統
+          </button>
+        </div>
+      </aside>
+
+      {/* 主內容區塊 */}
+      <main className="flex-grow flex flex-col h-screen overflow-hidden">
+        {/* 頂部標題列 */}
+        <header className="bg-white border-b border-slate-200 px-8 py-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2 text-xs text-slate-400 mb-1">
+              <Link to="/" className="hover:text-[#964696]">TreatGo</Link>
+              <ChevronRight size={12} />
+              <span>管理後台</span>
+              <ChevronRight size={12} />
+              <span className="text-slate-600 font-medium">
+                {activeTab === 'stores' ? '廠商管理' : '活動管理'}
+              </span>
+            </div>
+            <h1 className="text-2xl font-bold text-slate-800">
+              {activeTab === 'stores' ? '特約廠商清單' : '最新活動管理'}
+            </h1>
+          </div>
+
+          <div className="flex items-center gap-3">
+            {activeTab === 'stores' ? (
+              <>
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                  <input 
+                    type="text"
+                    placeholder="快速搜尋..."
+                    className="pl-9 pr-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-[#964696] outline-none text-sm w-48 md:w-64"
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                  />
+                </div>
+                <button 
+                  onClick={handleAddClick}
+                  className="flex items-center gap-2 bg-[#964696] text-white px-4 py-2 rounded-lg hover:opacity-90 transition-all shadow-sm font-bold text-sm"
+                >
+                  <Plus size={18} /> 新增廠商
+                </button>
+              </>
+            ) : (
+              <button 
+                onClick={() => { setEditingActivity({ title: '', content: '', is_active: true }); setIsModalOpen(true); }}
+                className="flex items-center gap-2 bg-[#964696] text-white px-4 py-2 rounded-lg hover:opacity-90 transition-all shadow-sm font-bold text-sm"
+              >
+                <Plus size={18} /> 新增活動
+              </button>
+            )}
+          </div>
+        </header>
+
+        <div className="flex-grow overflow-auto p-8">
+          {activeTab === 'stores' ? (
+            <AdminStoreTable 
+              stores={stores} 
+              loading={loading} 
+              searchTerm={searchTerm} 
+              columnFilters={columnFilters}
+              setColumnFilters={setColumnFilters}
+              setSearchTerm={setSearchTerm}
+              onEdit={handleEditClick} 
+              onDelete={handleDelete} 
+            />
+          ) : (
+            <AdminActivityTable 
+              activities={activities} 
+              loading={loading} 
+              onEdit={(act) => { setEditingActivity(act); setIsModalOpen(true); }} 
+              onDelete={handleDeleteActivity} 
+            />
+          )}
+        </div>
+      </main>
+
+      <StoreModal 
+        isOpen={isModalOpen && activeTab === 'stores'} 
+        onClose={() => setIsModalOpen(false)} 
+        store={editingStore} 
+        onSave={handleSave} 
+        setStore={setEditingStore}
+        categories={categories} // 傳遞分類列表
+      />
+      <ActivityModal 
+        isOpen={isModalOpen && activeTab === 'activities'} 
+        onClose={() => setIsModalOpen(false)} 
+        activity={editingActivity} 
+        onSave={handleSaveActivity} 
+        setActivity={setEditingActivity} 
+      />
     </div>
   );
 };
+
+const DashboardSkeleton = () => (
+  <div className="min-h-screen bg-slate-50 flex animate-pulse">
+    <div className="w-64 bg-slate-200 hidden md:block"></div>
+    <div className="flex-grow flex flex-col p-8 gap-6">
+      <div className="h-12 bg-white rounded-xl w-1/3"></div>
+      <div className="h-64 bg-white rounded-2xl"></div>
+    </div>
+  </div>
+);
 
 export default AdminDashboard;
